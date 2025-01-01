@@ -1,0 +1,10 @@
+[defaults]
+inventory = /ansible/inventory
+host_key_checking = False
+retry_files_enabled = False
+roles_path = /ansible/roles
+collections_path = /ansible/collections
+
+[ssh_connection]
+pipelining = True
+control_path = /tmp/ansible-ssh-%%h-%%p-%%r 

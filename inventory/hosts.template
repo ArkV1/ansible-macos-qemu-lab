@@ -1,0 +1,6 @@
+[macos_hosts]
+host.docker.internal ansible_connection=ssh ansible_user=YOUR_USERNAME ansible_python_interpreter=/opt/homebrew/bin/python3
+
+[qemu_vms]
+# VMs will be added here automatically by the provisioning playbook
+# Format: vm_name ansible_host=localhost ansible_port=PORT ansible_user=ubuntu 

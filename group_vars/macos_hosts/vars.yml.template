@@ -1,0 +1,16 @@
+# Template for MacOS host variables
+# Copy this file to vars.yml and replace the values with your own
+
+# If you need to use password authentication (not recommended)
+# ansible_ssh_pass: YOUR_PASSWORD
+
+# Python interpreter path (default is correct for Homebrew Python)
+ansible_python_interpreter: /opt/homebrew/bin/python3
+
+# Base directory for VM files
+vm_base_dir: "{{ ansible_env.HOME }}/vms"
+
+# Default VM settings
+default_vm_memory: "2048"
+default_vm_cpus: "2"
+default_vm_disk_size: "20G" 

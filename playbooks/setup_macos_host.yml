@@ -1,0 +1,123 @@
+---
+- name: Setup MacOS Host for QEMU VMs
+  hosts: macos_hosts
+  gather_facts: true
+  vars:
+    homebrew_path: /opt/homebrew/bin/brew
+
+  tasks:
+    - name: Debug connection information
+      debug:
+        msg: |
+          Hostname: {{ ansible_hostname }}
+          Distribution: {{ ansible_distribution }}
+          User: {{ ansible_user_id }}
+          Home: {{ ansible_env.HOME }}
+          Python: {{ ansible_python.executable }}
+
+    - name: Test command execution
+      command: whoami
+      register: whoami_result
+
+    - name: Show command result
+      debug:
+        var: whoami_result.stdout
+
+    - name: Check if Homebrew is installed
+      stat:
+        path: "{{ homebrew_path }}"
+      register: brew_binary
+
+    - name: Install Homebrew if not present
+      shell: |
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      when: not brew_binary.stat.exists
+
+    - name: Update Homebrew
+      command: "{{ homebrew_path }} update"
+      environment:
+        PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
+
+    - name: Install QEMU
+      community.general.homebrew:
+        name: qemu
+        state: present
+        path: "{{ homebrew_path }}"
+      environment:
+        PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
+      register: qemu_install
+      
+    - name: Debug QEMU installation
+      debug:
+        var: qemu_install
+
+    - name: Install libvirt
+      community.general.homebrew:
+        name: libvirt
+        state: present
+        path: "{{ homebrew_path }}"
+      environment:
+        PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
+      register: libvirt_install
+
+    - name: Debug libvirt installation
+      debug:
+        var: libvirt_install
+
+    - name: Install cdrtools
+      community.general.homebrew:
+        name: cdrtools
+        state: present
+        path: "{{ homebrew_path }}"
+      environment:
+        PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
+      register: cdrtools_install
+
+    - name: Debug cdrtools installation
+      debug:
+        var: cdrtools_install
+
+    - name: Create VM base directory
+      file:
+        path: "{{ ansible_env.HOME }}/vms"
+        state: directory
+        mode: '0755'
+
+    - name: Check if SSH key exists
+      stat:
+        path: "{{ ansible_env.HOME }}/.ssh/id_rsa.pub"
+      register: ssh_key
+
+    - name: Generate SSH key if not present
+      command: ssh-keygen -t rsa -b 4096 -f {{ ansible_env.HOME }}/.ssh/id_rsa -N ""
+      when: not ssh_key.stat.exists
+
+    - name: Start libvirt service
+      command: "{{ homebrew_path }} services start libvirt"
+      environment:
+        PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
+      register: libvirt_service
+
+    - name: Debug libvirt service start
+      debug:
+        var: libvirt_service
+
+    - name: Display setup completion message
+      debug:
+        msg: |
+          MacOS host setup completed successfully!
+          
+          Installed components:
+          - QEMU (VM hypervisor)
+          - Libvirt (VM management)
+          - CDRTools (ISO creation)
+          
+          Created directories:
+          - ~/vms (Base directory for VM files)
+          
+          SSH key status:
+          {% if not ssh_key.stat.exists %}
+          - New SSH key generated at ~/.ssh/id_rsa
+          {% else %}
+          - Using existing SSH key at ~/.ssh/id_rsa
+          {% endif %} 

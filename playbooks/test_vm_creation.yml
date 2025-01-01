@@ -1,0 +1,163 @@
+---
+- name: Test VM Creation on MacOS Host
+  hosts: macos_hosts
+  gather_facts: true
+  vars:
+    vm_name: "test-ubuntu"
+    vm_memory: "2048"
+    vm_cpus: "2"
+    vm_disk_size: "10G"
+    vm_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    vm_base_dir: "{{ ansible_env.HOME }}/vms"
+    ssh_port: 2222
+    homebrew_prefix: "/opt/homebrew"
+
+  pre_tasks:
+    - name: Ensure VM base directory exists
+      file:
+        path: "{{ vm_base_dir }}"
+        state: directory
+        mode: '0755'
+
+  tasks:
+    - name: Ensure VM directory exists
+      file:
+        path: "{{ vm_base_dir }}/{{ vm_name }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download Ubuntu cloud image
+      get_url:
+        url: "{{ vm_image_url }}"
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/base.img"
+        mode: '0644'
+
+    - name: Get local SSH key
+      slurp:
+        src: "{{ ansible_env.HOME }}/.ssh/id_rsa.pub"
+      register: ssh_key
+
+    - name: Create cloud-init config
+      copy:
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.cfg"
+        mode: '0644'
+        content: |
+          #cloud-config
+          hostname: {{ vm_name }}
+          users:
+            - name: ubuntu
+              sudo: ALL=(ALL) NOPASSWD:ALL
+              shell: /bin/bash
+              ssh_authorized_keys:
+                - {{ (ssh_key.content | b64decode).strip() }}
+          ssh_pwauth: false
+          disable_root: true
+          package_update: true
+          package_upgrade: true
+
+    - name: Create cloud-init metadata
+      copy:
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/meta-data"
+        mode: '0644'
+        content: |
+          instance-id: {{ vm_name }}
+          local-hostname: {{ vm_name }}
+
+    - name: Create cloud-init ISO
+      command: |
+        {{ homebrew_prefix }}/bin/mkisofs -output "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso" \
+          -volid cidata -joliet -rock -input-charset utf-8 \
+          "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.cfg" \
+          "{{ vm_base_dir }}/{{ vm_name }}/meta-data"
+      args:
+        creates: "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso"
+
+    - name: Create VM disk
+      command: |
+        {{ homebrew_prefix }}/bin/qemu-img create -f qcow2 -F qcow2 \
+          -b "{{ vm_base_dir }}/{{ vm_name }}/base.img" \
+          "{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2" {{ vm_disk_size }}
+      args:
+        creates: "{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2"
+
+    - name: Check if VM is already running
+      shell: "pgrep -f 'qemu.*{{ vm_name }}' || true"
+      register: vm_check
+      changed_when: false
+
+    - name: Kill existing VM if running
+      command: "pkill -f 'qemu.*{{ vm_name }}'"
+      when: vm_check.stdout != ""
+      ignore_errors: true
+
+    - name: Start VM
+      command: |
+        {{ homebrew_prefix }}/bin/qemu-system-x86_64 \
+          -name {{ vm_name }} \
+          -m {{ vm_memory }} \
+          -smp {{ vm_cpus }} \
+          -cpu host \
+          -machine type=q35,accel=hvf \
+          -drive file="{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2",format=qcow2,if=virtio \
+          -drive file="{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso",format=raw,if=ide,media=cdrom \
+          -netdev user,id=net0,hostfwd=tcp::{{ ssh_port }}-:22 \
+          -device virtio-net-pci,netdev=net0 \
+          -nographic \
+          -serial mon:stdio \
+          -daemonize
+      register: qemu_output
+      
+    - name: Debug QEMU output
+      debug:
+        var: qemu_output
+
+    - name: Wait for VM to boot and SSH to be available
+      wait_for:
+        port: "{{ ssh_port }}"
+        host: localhost
+        delay: 30
+        timeout: 300
+        state: started
+      register: ssh_check
+
+    - name: Add VM to inventory
+      add_host:
+        name: "{{ vm_name }}"
+        ansible_host: localhost
+        ansible_port: "{{ ssh_port }}"
+        ansible_user: ubuntu
+        groups: qemu_vms
+
+    - name: Update inventory file
+      copy:
+        content: |
+          [macos_hosts]
+          host.docker.internal ansible_connection=ssh ansible_user={{ ansible_user_id }} ansible_python_interpreter={{ ansible_python.executable }}
+
+          [qemu_vms]
+          {{ vm_name }} ansible_host=localhost ansible_port={{ ssh_port }} ansible_user=ubuntu
+        dest: "{{ playbook_dir }}/../inventory/hosts"
+        mode: '0644'
+
+- name: Test VM Connection
+  hosts: test-ubuntu
+  gather_facts: false
+  tasks:
+    - name: Wait for cloud-init to complete
+      raw: cloud-init status --wait
+      register: cloud_init_result
+      until: cloud_init_result.rc == 0
+      retries: 12
+      delay: 5
+
+    - name: Get VM information
+      command: hostname
+      register: hostname_result
+
+    - name: Display VM information
+      debug:
+        msg: |
+          VM Creation Test Completed:
+          Hostname: {{ hostname_result.stdout }}
+          SSH Port: {{ hostvars[inventory_hostname]['ansible_port'] }}
+          Username: {{ hostvars[inventory_hostname]['ansible_user'] }} 

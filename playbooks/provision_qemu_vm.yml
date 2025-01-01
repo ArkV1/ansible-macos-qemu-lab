@@ -1,0 +1,94 @@
+---
+- name: Provision QEMU VM
+  hosts: macos_hosts
+  gather_facts: true
+  vars:
+    vm_name: "test-vm"
+    vm_memory: "2048"
+    vm_cpus: "2"
+    vm_disk_size: "20G"
+    vm_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    vm_network: "default"
+    vm_base_dir: "{{ ansible_env.HOME }}/vms"
+    ssh_public_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+
+  tasks:
+    - name: Ensure VM directory exists
+      file:
+        path: "{{ vm_base_dir }}/{{ vm_name }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download cloud image
+      get_url:
+        url: "{{ vm_image_url }}"
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/base.img"
+
+    - name: Create cloud-init config
+      copy:
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.cfg"
+        content: |
+          #cloud-config
+          hostname: {{ vm_name }}
+          users:
+            - name: ubuntu
+              sudo: ALL=(ALL) NOPASSWD:ALL
+              shell: /bin/bash
+              ssh_authorized_keys:
+                - {{ ssh_public_key }}
+          package_update: true
+          package_upgrade: true
+
+    - name: Create cloud-init ISO
+      command: |
+        mkisofs -output "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso" \
+          -volid cidata -joliet -rock -input-charset utf-8 \
+          "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.cfg"
+
+    - name: Create VM disk
+      command: |
+        qemu-img create -f qcow2 -F qcow2 \
+          -b "{{ vm_base_dir }}/{{ vm_name }}/base.img" \
+          "{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2" {{ vm_disk_size }}
+
+    - name: Start VM with QEMU directly
+      command: |
+        qemu-system-x86_64 \
+          -name {{ vm_name }} \
+          -m {{ vm_memory }} \
+          -smp {{ vm_cpus }} \
+          -drive file="{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2",format=qcow2 \
+          -drive file="{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso",format=raw,media=cdrom \
+          -netdev user,id=net0,hostfwd=tcp::2222-:22 \
+          -device virtio-net-pci,netdev=net0 \
+          -display none \
+          -daemonize
+
+    - name: Wait for SSH to come up
+      wait_for:
+        port: 2222
+        host: localhost
+        delay: 10
+        timeout: 300
+
+    - name: Add VM to inventory
+      add_host:
+        name: "{{ vm_name }}"
+        ansible_host: localhost
+        ansible_port: 2222
+        ansible_user: ubuntu
+        groups: qemu_vms
+
+    - name: Add VM to inventory file
+      lineinfile:
+        path: "{{ playbook_dir }}/../inventory/hosts"
+        line: "{{ vm_name }} ansible_host=localhost ansible_port=2222 ansible_user=ubuntu"
+        insertafter: "[qemu_vms]"
+        create: yes
+
+- name: Verify VM connection
+  hosts: qemu_vms
+  gather_facts: false
+  tasks:
+    - name: Check connection
+      ping: 

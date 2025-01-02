@@ -37,25 +37,31 @@
         src: "{{ ansible_env.HOME }}/.ssh/id_rsa.pub"
       register: ssh_key
 
-    - name: Create cloud-init config
+    - name: Create cloud-init user-data
       copy:
-        dest: "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.cfg"
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/user-data"
         mode: '0644'
         content: |
           #cloud-config
-          hostname: {{ vm_name }}
           users:
             - name: ubuntu
-              sudo: ALL=(ALL) NOPASSWD:ALL
+              sudo: ['ALL=(ALL) NOPASSWD:ALL']
+              groups: sudo
               shell: /bin/bash
               ssh_authorized_keys:
                 - {{ (ssh_key.content | b64decode).strip() }}
-          ssh_pwauth: false
-          disable_root: true
-          package_update: true
-          package_upgrade: true
+          chpasswd:
+            list: |
+              ubuntu:ubuntu
+            expire: false
+          ssh_pwauth: true
+          package_update: false
+          package_upgrade: false
+          runcmd:
+            - systemctl enable ssh
+            - systemctl start ssh
 
-    - name: Create cloud-init metadata
+    - name: Create cloud-init meta-data
       copy:
         dest: "{{ vm_base_dir }}/{{ vm_name }}/meta-data"
         mode: '0644'
@@ -67,18 +73,10 @@
       command: |
         {{ homebrew_prefix }}/bin/mkisofs -output "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso" \
           -volid cidata -joliet -rock -input-charset utf-8 \
-          "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.cfg" \
+          "{{ vm_base_dir }}/{{ vm_name }}/user-data" \
           "{{ vm_base_dir }}/{{ vm_name }}/meta-data"
       args:
         creates: "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso"
-
-    - name: Create VM disk
-      command: |
-        {{ homebrew_prefix }}/bin/qemu-img create -f qcow2 -F qcow2 \
-          -b "{{ vm_base_dir }}/{{ vm_name }}/base.img" \
-          "{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2" {{ vm_disk_size }}
-      args:
-        creates: "{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2"
 
     - name: Check if VM is already running
       shell: "pgrep -f 'qemu.*{{ vm_name }}' || true"
@@ -96,14 +94,14 @@
           -name {{ vm_name }} \
           -m {{ vm_memory }} \
           -smp {{ vm_cpus }} \
-          -cpu host \
-          -machine type=q35,accel=hvf \
+          -cpu qemu64 \
+          -machine type=q35,accel=tcg \
           -drive file="{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2",format=qcow2,if=virtio \
           -drive file="{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso",format=raw,if=ide,media=cdrom \
-          -netdev user,id=net0,hostfwd=tcp::{{ ssh_port }}-:22 \
+          -netdev user,id=net0,hostfwd=tcp:0.0.0.0:{{ ssh_port }}-:22 \
           -device virtio-net-pci,netdev=net0 \
-          -nographic \
-          -serial mon:stdio \
+          -display none \
+          -serial file:{{ vm_base_dir }}/{{ vm_name }}/console.log \
           -daemonize
       register: qemu_output
       
@@ -116,39 +114,46 @@
         port: "{{ ssh_port }}"
         host: localhost
         delay: 30
-        timeout: 300
         state: started
       register: ssh_check
 
     - name: Add VM to inventory
       add_host:
         name: "{{ vm_name }}"
-        ansible_host: localhost
+        ansible_host: host.docker.internal
         ansible_port: "{{ ssh_port }}"
         ansible_user: ubuntu
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
         groups: qemu_vms
 
-    - name: Update inventory file
-      copy:
-        content: |
-          [macos_hosts]
-          host.docker.internal ansible_connection=ssh ansible_user={{ ansible_user_id }} ansible_python_interpreter={{ ansible_python.executable }}
+    - name: Update inventory file - macos_hosts
+      lineinfile:
+        path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
+        regexp: "^host.docker.internal.*$"
+        line: "host.docker.internal ansible_connection=ssh ansible_user={{ ansible_user_id }} ansible_python_interpreter={{ ansible_python.executable }}"
+        insertbefore: "^\\[qemu_vms\\]"
+        state: present
 
-          [qemu_vms]
-          {{ vm_name }} ansible_host=localhost ansible_port={{ ssh_port }} ansible_user=ubuntu
-        dest: "{{ playbook_dir }}/../inventory/hosts"
-        mode: '0644'
+    - name: Update inventory file - qemu_vms
+      lineinfile:
+        path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
+        regexp: "^{{ vm_name }}.*$"
+        line: "{{ vm_name }} ansible_host=host.docker.internal ansible_port={{ ssh_port }} ansible_user=ubuntu"
+        insertafter: "^\\[qemu_vms\\]"
+        state: present
 
 - name: Test VM Connection
   hosts: test-ubuntu
   gather_facts: false
+  vars:
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
   tasks:
     - name: Wait for cloud-init to complete
       raw: cloud-init status --wait
       register: cloud_init_result
       until: cloud_init_result.rc == 0
-      retries: 12
-      delay: 5
+      retries: 30
+      delay: 10
 
     - name: Get VM information
       command: hostname
@@ -159,5 +164,5 @@
         msg: |
           VM Creation Test Completed:
           Hostname: {{ hostname_result.stdout }}
-          SSH Port: {{ hostvars[inventory_hostname]['ansible_port'] }}
-          Username: {{ hostvars[inventory_hostname]['ansible_user'] }} 
+          SSH Port: {{ ansible_port }}
+          Username: {{ ansible_user }} 

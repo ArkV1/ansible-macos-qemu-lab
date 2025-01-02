@@ -6,6 +6,7 @@ RUN apt-get update && \
     openssh-client \
     sshpass \
     git \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

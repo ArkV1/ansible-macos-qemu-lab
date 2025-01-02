@@ -68,16 +68,16 @@ cd ansible-qemu-macos-control
 
 2. **Set up configuration files**
 ```bash
-# Create inventory file
-cp inventory/hosts.template inventory/hosts
+# Create inventory file from template
+cp templates/inventory/hosts.template inventory/hosts
 # Edit inventory/hosts and replace YOUR_USERNAME with your MacOS username
 
 # Create group vars (optional)
-cp group_vars/macos_hosts/vars.yml.template group_vars/macos_hosts/vars.yml
+cp templates/group_vars/macos_hosts/vars.yml.template group_vars/macos_hosts/vars.yml
 # Edit vars.yml if you need to customize VM settings
 
 # Create ansible config
-cp ansible.cfg.template ansible.cfg
+cp templates/ansible.cfg.template ansible.cfg
 ```
 
 3. **Build the container**
@@ -87,11 +87,7 @@ docker build -t ansible-control-node .
 
 4. **Run the container**
 ```bash
-docker run -d --name ansible-controller \
-  -v $(pwd)/playbooks:/ansible/playbooks \
-  -v $(pwd)/inventory:/ansible/inventory \
-  -v ~/.ssh:/root/.ssh:ro \
-  ansible-control-node
+docker run -d --name ansible-controller -v "$(pwd)/playbooks:/ansible/playbooks" -v "$(pwd)/inventory:/ansible/inventory" -v "$(pwd)/group_vars:/ansible/group_vars" -v "$(pwd)/ansible.cfg:/ansible/ansible.cfg:ro" -v "$HOME/.ssh:/root/.ssh:ro" ansible-control-node
 ```
 
 ## Using the Container
@@ -135,6 +131,10 @@ You can customize the VM settings by editing the variables in `playbooks/provisi
 - `/ansible/inventory`: Mount your inventory files here
 - `/ansible/roles`: Directory for Ansible roles
 - `/ansible/collections`: Directory for Ansible collections
+- `/templates`: Reference templates for configuration files
+  - `/templates/inventory`: Inventory file templates
+  - `/templates/group_vars`: Group variables templates
+  - Other configuration templates
 
 ## Contributing
 

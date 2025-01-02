@@ -136,6 +136,37 @@ You can customize the VM settings by editing the variables in `playbooks/provisi
   - `/templates/group_vars`: Group variables templates
   - Other configuration templates
 
+## Playbook Examples
+
+### Setting up MacOS Host
+This playbook configures your MacOS host with necessary dependencies and settings:
+
+```bash
+docker exec -it ansible-controller ansible-playbook playbooks/setup_macos_host.yml
+```
+
+### Provisioning a QEMU VM
+Create a new Ubuntu VM with custom settings:
+
+```bash
+# Create VM with default settings
+docker exec -it ansible-controller ansible-playbook playbooks/provision_qemu_vm.yml
+
+# Create VM with custom settings
+docker exec -it ansible-controller ansible-playbook playbooks/provision_qemu_vm.yml \
+  -e "vm_name=custom-ubuntu" \
+  -e "vm_memory=4096" \
+  -e "vm_cpus=4" \
+  -e "vm_disk_size=40G"
+```
+
+### Testing VM Creation
+Run the test playbook to verify VM creation functionality:
+
+```bash
+docker exec -it ansible-controller ansible-playbook playbooks/test_vm_creation.yml
+```
+
 ## Contributing
 
 1. Fork the repository

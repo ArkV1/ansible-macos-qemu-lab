@@ -151,7 +151,16 @@
         fi
       register: vm_check
       changed_when: false
-      failed_when: vm_check.rc != 0
+      failed_when: false
+
+    - name: Handle existing VM
+      fail:
+        msg: |
+          VM "{{ vm_name }}" is already running.
+          To create a new VM:
+          1. Choose a different name, or
+          2. Stop the existing VM first using: pkill -f "qemu-system.*{{ vm_name }}"
+      when: vm_check.rc != 0
 
     - name: Verify port is available
       wait_for:
@@ -186,6 +195,7 @@
         host: localhost
         delay: 30
         timeout: 300
+        sleep: 5
       register: ssh_check
 
     - name: Add VM to inventory
@@ -198,11 +208,22 @@
         groups: qemu_vms
 
     - name: Add VM to inventory file
-      lineinfile:
-        path: "{{ playbook_dir }}/../inventory/hosts"
-        line: "{{ vm_name }} ansible_host=host.docker.internal ansible_port={{ ssh_port }} ansible_user=ubuntu"
-        insertafter: "[qemu_vms]"
-        create: yes
+      block:
+        - name: Ensure qemu_vms group exists
+          lineinfile:
+            path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
+            line: "[qemu_vms]"
+            create: yes
+            mode: '0644'
+            
+        - name: Add VM to inventory file
+          lineinfile:
+            path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
+            regexp: "^{{ vm_name }}.*$"
+            line: "{{ vm_name }} ansible_host=host.docker.internal ansible_port={{ ssh_port }} ansible_user=ubuntu"
+            insertafter: "^\\[qemu_vms\\]"
+            state: present
+            mode: '0644'
 
 - name: Verify VM connection
   hosts: "{{ vm_name }}"
@@ -210,16 +231,25 @@
   vars:
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
   tasks:
+    - name: Wait for SSH to be fully ready
+      wait_for_connection:
+        delay: 10
+        timeout: 300
+        sleep: 5
+
     - name: Wait for cloud-init to complete
       raw: cloud-init status --wait
       register: cloud_init_result
       until: cloud_init_result.rc == 0
-      retries: 30
-      delay: 10
+      retries: 60
+      delay: 5
 
     - name: Get VM information
       command: hostname
       register: hostname_result
+      retries: 3
+      delay: 5
+      until: hostname_result.rc == 0
 
     - name: Display VM information
       debug:

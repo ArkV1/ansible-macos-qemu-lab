@@ -9,7 +9,8 @@
     vm_disk_size: "10G"
     vm_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
     vm_base_dir: "{{ ansible_env.HOME }}/vms/test"
-    ssh_port: 2222
+    ssh_port_start: 2222
+    ssh_port_end: 2299
     homebrew_prefix: "/opt/homebrew"
 
   pre_tasks:
@@ -18,6 +19,58 @@
         path: "{{ vm_base_dir }}"
         state: directory
         mode: '0755'
+
+    - name: Find available SSH port
+      block:
+        - name: Get ports from inventory file
+          shell: |
+            if [ -f "{{ playbook_dir }}/../inventory/hosts" ]; then
+              grep -E "ansible_port=[0-9]+" "{{ playbook_dir }}/../inventory/hosts" | sed -E 's/.*ansible_port=([0-9]+).*/\1/' || true
+            fi
+          register: inventory_ports
+          changed_when: false
+          
+        - name: Find available port
+          shell: |
+            used_ports=($({{ inventory_ports.stdout_lines | default([]) | join(' ') }}))
+            for port in $(seq {{ ssh_port_start }} {{ ssh_port_end }}); do
+              # Check if port is in use by any process
+              if ! lsof -i :$port > /dev/null 2>&1; then
+                # Double check with netstat for better reliability
+                if ! netstat -an | grep -q "\.${port}[[:space:]]"; then
+                  # Check if port is not in inventory
+                  if ! echo ${used_ports[@]} | grep -q "$port"; then
+                    # Verify port is truly available by attempting to bind to it
+                    if (python3 -c "import socket; s=socket.socket(); s.bind(('', $port)); s.close()" 2>/dev/null); then
+                      echo $port
+                      break
+                    fi
+                  fi
+                fi
+              fi
+            done
+          register: available_port
+          changed_when: false
+
+        - name: Verify port availability one final time
+          wait_for:
+            port: "{{ available_port.stdout }}"
+            state: stopped
+            timeout: 5
+          when: available_port.stdout != ""
+
+    - name: Set SSH port
+      set_fact:
+        ssh_port: "{{ available_port.stdout }}"
+
+    - name: Fail if no ports are available
+      fail:
+        msg: "No available ports found in range {{ ssh_port_start }}-{{ ssh_port_end }}"
+      when: not ssh_port | int
+
+    - name: Display selected port
+      debug:
+        msg: "Using SSH port: {{ ssh_port }}"
 
   tasks:
     - name: Ensure VM directory exists
@@ -122,7 +175,8 @@
         port: "{{ ssh_port }}"
         host: localhost
         delay: 30
-        state: started
+        timeout: 300
+        sleep: 5
       register: ssh_check
 
     - name: Add VM to inventory
@@ -134,27 +188,31 @@
         ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
         groups: qemu_vms
 
-    - name: Update inventory file - macos_hosts
-      lineinfile:
-        path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
-        regexp: "^host.docker.internal.*$"
-        line: "host.docker.internal ansible_connection=ssh ansible_user={{ ansible_user_id }} ansible_python_interpreter={{ ansible_python.executable }}"
-        insertbefore: "^\\[qemu_vms\\]"
-        state: present
-
-    - name: Update inventory file - qemu_vms
-      lineinfile:
-        path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
-        regexp: "^{{ vm_name }}.*$"
-        line: "{{ vm_name }} ansible_host=host.docker.internal ansible_port={{ ssh_port }} ansible_user=ubuntu"
-        insertafter: "^\\[qemu_vms\\]"
-        state: present
+    - name: Add VM to inventory file
+      block:
+        - name: Ensure qemu_vms group exists
+          lineinfile:
+            path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
+            line: "[qemu_vms]"
+            create: yes
+            mode: '0644'
+            
+        - name: Add VM to inventory file
+          lineinfile:
+            path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
+            regexp: "^{{ vm_name }}.*$"
+            line: "{{ vm_name }} ansible_host=host.docker.internal ansible_port={{ ssh_port }} ansible_user=ubuntu"
+            insertafter: "^\\[qemu_vms\\]"
+            state: present
+            mode: '0644'
 
 - name: Test VM Connection
   hosts: test-ubuntu
   gather_facts: false
   vars:
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+    vm_base_dir: "{{ hostvars['host.docker.internal']['ansible_env']['HOME'] }}/vms/test"
+    vm_name: "test-ubuntu"
   tasks:
     - name: Wait for cloud-init to complete
       raw: cloud-init status --wait

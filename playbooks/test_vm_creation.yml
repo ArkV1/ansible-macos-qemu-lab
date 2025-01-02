@@ -8,7 +8,7 @@
     vm_cpus: "2"
     vm_disk_size: "10G"
     vm_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
-    vm_base_dir: "{{ ansible_env.HOME }}/vms"
+    vm_base_dir: "{{ ansible_env.HOME }}/vms/test"
     ssh_port: 2222
     homebrew_prefix: "/opt/homebrew"
 
@@ -31,6 +31,14 @@
         url: "{{ vm_image_url }}"
         dest: "{{ vm_base_dir }}/{{ vm_name }}/base.img"
         mode: '0644'
+
+    - name: Create VM disk
+      command: |
+        {{ homebrew_prefix }}/bin/qemu-img create -f qcow2 -F qcow2 \
+          -b "{{ vm_base_dir }}/{{ vm_name }}/base.img" \
+          "{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2" {{ vm_disk_size }}
+      args:
+        creates: "{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2"
 
     - name: Get local SSH key
       slurp:
@@ -165,4 +173,5 @@
           VM Creation Test Completed:
           Hostname: {{ hostname_result.stdout }}
           SSH Port: {{ ansible_port }}
-          Username: {{ ansible_user }} 
+          Username: {{ ansible_user }}
+          Location: {{ vm_base_dir }}/{{ vm_name }} 

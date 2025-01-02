@@ -3,7 +3,7 @@
   hosts: macos_hosts
   gather_facts: true
   vars:
-    homebrew_path: /opt/homebrew/bin/brew
+    homebrew_path: "{{ '/opt/homebrew/bin/brew' if ansible_architecture == 'arm64' else '/usr/local/bin/brew' }}"
 
   tasks:
     - name: Debug connection information
@@ -14,6 +14,7 @@
           User: {{ ansible_user_id }}
           Home: {{ ansible_env.HOME }}
           Python: {{ ansible_python.executable }}
+          Architecture: {{ ansible_architecture }}
 
     - name: Test command execution
       command: whoami
@@ -32,11 +33,19 @@
       shell: |
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       when: not brew_binary.stat.exists
+      register: homebrew_install
+      failed_when: 
+        - homebrew_install.rc != 0
+        - "'already installed' not in homebrew_install.stderr"
 
     - name: Update Homebrew
       command: "{{ homebrew_path }} update"
       environment:
         PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
+      register: brew_update
+      failed_when:
+        - brew_update.rc != 0
+        - "'Already up-to-date' not in brew_update.stderr"
 
     - name: Install QEMU
       community.general.homebrew:
@@ -91,12 +100,22 @@
     - name: Generate SSH key if not present
       command: ssh-keygen -t rsa -b 4096 -f {{ ansible_env.HOME }}/.ssh/id_rsa -N ""
       when: not ssh_key.stat.exists
+      register: ssh_key_gen
+      failed_when: 
+        - ssh_key_gen.rc != 0 
+        - "'Key already exists' not in ssh_key_gen.stderr"
+
+    - name: Check libvirt service status
+      shell: "{{ homebrew_path }} services list | grep libvirt || true"
+      register: libvirt_status
+      changed_when: false
 
     - name: Start libvirt service
       command: "{{ homebrew_path }} services start libvirt"
       environment:
         PATH: "/opt/homebrew/bin:{{ ansible_env.PATH }}"
       register: libvirt_service
+      when: "'started' not in libvirt_status.stdout"
 
     - name: Debug libvirt service start
       debug:
@@ -120,4 +139,7 @@
           - New SSH key generated at ~/.ssh/id_rsa
           {% else %}
           - Using existing SSH key at ~/.ssh/id_rsa
-          {% endif %} 
+          {% endif %}
+          
+          Architecture: {{ ansible_architecture }}
+          Homebrew path: {{ homebrew_path }} 

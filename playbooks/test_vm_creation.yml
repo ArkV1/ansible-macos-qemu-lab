@@ -2,18 +2,27 @@
 - name: Test VM Creation on MacOS Host
   hosts: macos_hosts
   gather_facts: true
+  vars_files:
+    - ../group_vars/macos_hosts/vars.yml
   vars:
     vm_name: "test-ubuntu"
     vm_memory: "2048"
     vm_cpus: "2"
     vm_disk_size: "10G"
     vm_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
-    vm_base_dir: "{{ ansible_env.HOME }}/vms/test"
+    vm_base_dir: "{{ vm_project_dir }}/test"
     ssh_port_start: 2222
     ssh_port_end: 2299
     homebrew_prefix: "/opt/homebrew"
 
   pre_tasks:
+    - name: Debug variables
+      debug:
+        msg: |
+          ansible_env.HOME: {{ ansible_env.HOME }}
+          vm_project_dir: {{ vm_project_dir | default('undefined') }}
+          vm_base_dir: {{ vm_base_dir | default('undefined') }}
+
     - name: Ensure VM base directory exists
       file:
         path: "{{ vm_base_dir }}"
@@ -182,47 +191,57 @@
     - name: Add VM to inventory
       add_host:
         name: "{{ vm_name }}"
-        ansible_host: host.docker.internal
         ansible_port: "{{ ssh_port }}"
         ansible_user: ubuntu
         ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
         groups: qemu_vms
 
-    - name: Add VM to inventory file
-      block:
-        - name: Ensure qemu_vms group exists
-          lineinfile:
-            path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
-            line: "[qemu_vms]"
-            create: yes
-            mode: '0644'
+    - name: Set VM facts for inventory update
+      set_fact:
+        vm_info: "{{ vm_name }} ansible_host=host.docker.internal ansible_port={{ ssh_port }} ansible_user=ubuntu ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
+        vm_name_fact: "{{ vm_name }}"
+
+- name: Update Control Node Inventory
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Ensure qemu_vms group exists in inventory file
+      lineinfile:
+        path: "/ansible/inventory/hosts"
+        line: "[qemu_vms]"
+        create: yes
+        mode: '0644'
             
-        - name: Add VM to inventory file
-          lineinfile:
-            path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
-            regexp: "^{{ vm_name }}.*$"
-            line: "{{ vm_name }} ansible_host=host.docker.internal ansible_port={{ ssh_port }} ansible_user=ubuntu"
-            insertafter: "^\\[qemu_vms\\]"
-            state: present
-            mode: '0644'
+    - name: Add or Update VM in inventory file
+      lineinfile:
+        path: "/ansible/inventory/hosts"
+        regexp: "^{{ hostvars['host.docker.internal']['vm_name_fact'] }}.*$"
+        line: "{{ hostvars['host.docker.internal']['vm_info'] }}"
+        insertafter: "^\\[qemu_vms\\]"
+        state: present
+        mode: '0644'
 
 - name: Test VM Connection
-  hosts: test-ubuntu
+  hosts: localhost
   gather_facts: false
-  vars:
-    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
-    vm_base_dir: "{{ hostvars['host.docker.internal']['ansible_env']['HOME'] }}/vms/test"
-    vm_name: "test-ubuntu"
   tasks:
-    - name: Wait for cloud-init to complete
-      raw: cloud-init status --wait
+    - name: Wait for VM to be fully ready
+      wait_for:
+        port: "{{ hostvars['host.docker.internal']['ssh_port'] }}"
+        host: host.docker.internal
+        delay: 60
+        timeout: 300
+        sleep: 5
+
+    - name: Check cloud-init status
+      shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@host.docker.internal -p {{ hostvars['host.docker.internal']['ssh_port'] }} 'cloud-init status --wait'"
       register: cloud_init_result
       until: cloud_init_result.rc == 0
       retries: 30
       delay: 10
 
     - name: Get VM information
-      command: hostname
+      shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@host.docker.internal -p {{ hostvars['host.docker.internal']['ssh_port'] }} 'hostname'"
       register: hostname_result
 
     - name: Display VM information
@@ -230,6 +249,6 @@
         msg: |
           VM Creation Test Completed:
           Hostname: {{ hostname_result.stdout }}
-          SSH Port: {{ ansible_port }}
-          Username: {{ ansible_user }}
-          Location: {{ vm_base_dir }}/{{ vm_name }} 
+          SSH Port: {{ hostvars['host.docker.internal']['ssh_port'] }}
+          Username: ubuntu
+          Location: {{ hostvars['host.docker.internal']['ansible_env']['HOME'] }}/vms/project_dockerized_ansible/test/test-ubuntu 

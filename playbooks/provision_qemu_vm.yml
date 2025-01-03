@@ -8,7 +8,7 @@
     vm_cpus: "2"
     vm_disk_size: "20G"
     vm_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
-    vm_base_dir: "{{ ansible_env.HOME }}/vms/ready"
+    vm_base_dir: "{{ vm_project_dir }}/ready"
     ssh_port_start: 2222
     ssh_port_end: 2299
     homebrew_prefix: "/opt/homebrew"
@@ -201,32 +201,32 @@
     - name: Add VM to inventory
       add_host:
         name: "{{ vm_name }}"
-        ansible_host: host.docker.internal
         ansible_port: "{{ ssh_port }}"
         ansible_user: ubuntu
         ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
         groups: qemu_vms
 
-    - name: Add VM to inventory file
-      block:
-        - name: Ensure qemu_vms group exists
-          lineinfile:
-            path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
-            line: "[qemu_vms]"
-            create: yes
-            mode: '0644'
-            
-        - name: Add VM to inventory file
-          lineinfile:
-            path: "{{ ansible_env.HOME }}/InfinityLabs/Ansible/dockerized ansible attempt/inventory/hosts"
-            regexp: "^{{ vm_name }}.*$"
-            line: "{{ vm_name }} ansible_host=host.docker.internal ansible_port={{ ssh_port }} ansible_user=ubuntu"
-            insertafter: "^\\[qemu_vms\\]"
-            state: present
-            mode: '0644'
+    - name: Output VM Information for Inventory Update
+      debug:
+        msg: |
+          VM Creation Completed. Use these values to update inventory:
+          vm_name: {{ vm_name }}
+          vm_port: {{ ssh_port }}
+          
+          For local Docker setup (same machine):
+          docker exec ansible-controller ansible-playbook playbooks/tasks/update_inventory.yml -e "vm_name={{ vm_name }}" -e "vm_port={{ ssh_port }}"
+          
+          For remote setup (different machine):
+          docker exec ansible-controller ansible-playbook playbooks/tasks/update_inventory.yml -e "vm_name={{ vm_name }}" -e "vm_port={{ ssh_port }}" -e "vm_host=<QEMU_HOST_IP>"
+
+- name: Update Inventory File
+  import_playbook: tasks/update_inventory.yml
+  vars:
+    vm_name: "{{ hostvars['localhost']['vm_name'] }}"
+    vm_port: "{{ hostvars['localhost']['ssh_port'] }}"
 
 - name: Verify VM connection
-  hosts: "{{ vm_name }}"
+  hosts: "{{ hostvars['localhost']['vm_name'] }}"
   gather_facts: false
   vars:
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'

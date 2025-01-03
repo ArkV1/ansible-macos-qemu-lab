@@ -1,0 +1,12 @@
+version: '3'
+
+services:
+  ansible:
+    build: .
+    volumes:
+      - .:/ansible
+      - ~/.ssh:/root/.ssh:ro
+      - ~/vms:/root/vms
+    network_mode: "host"
+    environment:
+      - ANSIBLE_CONFIG=/ansible/ansible.cfg 

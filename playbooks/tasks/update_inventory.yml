@@ -1,0 +1,43 @@
+---
+- name: Update Inventory with VM Information
+  hosts: localhost
+  gather_facts: false
+  vars:
+    required_vars:
+      - vm_name
+      - vm_port
+    inventory_path: "/ansible/inventory/hosts"
+    vm_entry: "{{ vm_name }} ansible_host=host.docker.internal ansible_port={{ vm_port }} ansible_user=ubuntu ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
+
+  pre_tasks:
+    - name: Verify required variables
+      assert:
+        that: "{{ item }} is defined"
+        fail_msg: "Required variable '{{ item }}' is not defined"
+      loop: "{{ required_vars }}"
+
+  tasks:
+    - name: Ensure qemu_vms group exists
+      lineinfile:
+        path: "{{ inventory_path }}"
+        line: "[qemu_vms]"
+        create: yes
+        mode: '0644'
+            
+    - name: Add or Update VM in inventory file
+      lineinfile:
+        path: "{{ inventory_path }}"
+        regexp: "^{{ vm_name }}.*$"
+        line: "{{ vm_entry }}"
+        insertafter: "^\\[qemu_vms\\]"
+        state: present
+        mode: '0644'
+
+    - name: Display Updated Inventory Information
+      debug:
+        msg: |
+          Updated inventory for VM:
+          - Name: {{ vm_name }}
+          - SSH Port: {{ vm_port }}
+          - Full Entry: {{ vm_entry }}
+          - Inventory File: {{ inventory_path }} 

@@ -87,7 +87,11 @@ docker build -t ansible-control-node .
 
 4. **Run the container**
 ```bash
-docker run -d --name ansible-controller -v "$(pwd)/playbooks:/ansible/playbooks" -v "$(pwd)/inventory:/ansible/inventory" -v "$(pwd)/group_vars:/ansible/group_vars" -v "$(pwd)/ansible.cfg:/ansible/ansible.cfg:ro" -v "$HOME/.ssh:/root/.ssh:ro" ansible-control-node
+# Start the container
+docker compose up -d
+
+# Or run it directly for one-off commands
+docker compose run --rm ansible ansible-playbook playbooks/your-playbook.yml
 ```
 
 ## Using the Container
@@ -96,10 +100,10 @@ To execute commands inside the container:
 
 ```bash
 # Check Ansible version
-docker exec -it ansible-controller ansible --version
+docker compose run --rm ansible ansible --version
 
 # Run a playbook
-docker exec -it ansible-controller ansible-playbook playbooks/your-playbook.yml
+docker compose run --rm ansible ansible-playbook playbooks/your-playbook.yml
 ```
 
 ### Creating QEMU VMs
@@ -107,7 +111,7 @@ docker exec -it ansible-controller ansible-playbook playbooks/your-playbook.yml
 The `provision_qemu_vm.yml` playbook will create a new VM on your host machine:
 
 ```bash
-docker exec -it ansible-controller ansible-playbook playbooks/provision_qemu_vm.yml
+docker compose run --rm ansible ansible-playbook playbooks/provision_qemu_vm.yml
 ```
 
 You can customize the VM settings by editing the variables in `playbooks/provision_qemu_vm.yml`:
@@ -115,7 +119,13 @@ You can customize the VM settings by editing the variables in `playbooks/provisi
 - `vm_memory`: RAM in MB (default: "2048")
 - `vm_cpus`: Number of CPU cores (default: "2")
 - `vm_disk_size`: Disk size (default: "20G")
-- `vm_base_dir`: Base directory for VM files (default: "~/vms")
+
+### Testing VM Creation
+Run the test playbook to verify VM creation functionality:
+
+```bash
+docker compose run --rm ansible ansible-playbook playbooks/test_vm_creation.yml
+```
 
 ## Security Notes
 

@@ -4,7 +4,7 @@ services:
   ansible:
     build: .
     volumes:
-      - .:/ansible
+      - .:/ansible:rw
       - ~/.ssh:/root/.ssh:ro
       - ~/vms:/root/vms
     network_mode: "host"

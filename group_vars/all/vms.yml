@@ -1,0 +1,27 @@
+---
+# Default settings for all VMs
+default_vm_settings:
+  memory: "2048"
+  cpus: "2"
+  disk_size: "20G"
+  image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+
+# List of VMs to create
+vms:
+  - name: "control-node"
+    group: "ansible_control"
+    memory: "4096"
+    cpus: "2"
+    disk_size: "40G"
+    
+  - name: "target1"
+    group: "target_nodes"
+    memory: "2048"
+    cpus: "2"
+    disk_size: "20G"
+    
+  - name: "target2"
+    group: "target_nodes"
+    memory: "2048"
+    cpus: "2"
+    disk_size: "20G" 

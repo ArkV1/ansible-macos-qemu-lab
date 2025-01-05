@@ -1,0 +1,275 @@
+---
+- name: Provision QEMU VM
+  hosts: macos_hosts
+  gather_facts: true
+  vars_files:
+    - ../../group_vars/macos_hosts/vars.yml
+    - ../../group_vars/all/vms.yml
+  vars:
+    network_interface: "en0"  # Default macOS WiFi interface
+    vm_ip_range_start: 10  # Start checking from 192.168.1.10
+    vm_ip_range_end: 250   # End at 192.168.1.250
+    vm_gateway: "192.168.1.1"
+    vm_netmask: "255.255.255.0"
+    vm_nameservers:
+      - "8.8.8.8"
+      - "8.8.4.4"
+    vm_name: "{{ name }}"
+  environment:
+    OBJC_DISABLE_INITIALIZE_FORK_SAFETY: "YES"
+
+  pre_tasks:
+    - name: Test sudo access
+      command: whoami
+      become: true
+      changed_when: false
+      register: sudo_test
+
+    - name: Fail if sudo test failed
+      fail:
+        msg: "Sudo access is required to run this playbook. Please run with --ask-become-pass"
+      when: sudo_test.failed is defined and sudo_test.failed
+
+    - name: Find available IP address
+      shell: |
+        for ip in $(seq {{ vm_ip_range_start }} {{ vm_ip_range_end }}); do
+          if ! ping -c 1 -W 1 192.168.1.$ip > /dev/null 2>&1; then
+            # Also check if IP is not in inventory
+            if ! grep -q "192.168.1.$ip" /ansible/inventory/hosts; then
+              echo "192.168.1.$ip"
+              exit 0
+            fi
+          fi
+        done
+        echo "No IP available in range"
+        exit 1
+      register: ip_check
+      changed_when: false
+      failed_when: ip_check.stdout == "No IP available in range"
+
+    - name: Set VM IP fact
+      set_fact:
+        vm_ip: "{{ ip_check.stdout }}"
+
+    - name: Display selected IP
+      debug:
+        msg: "Selected IP address for VM: {{ vm_ip }}"
+
+  tasks:
+    - name: Create VM directory
+      file:
+        path: "{{ vm_project_dir }}/{{ vm_name }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download Ubuntu cloud image
+      get_url:
+        url: "{{ default_vm_settings.image_url }}"
+        dest: "{{ vm_project_dir }}/{{ vm_name }}/base.img"
+        mode: '0644'
+
+    - name: Create VM disk
+      command: |
+        {{ homebrew_prefix }}/bin/qemu-img create -f qcow2 -F qcow2 \
+          -b "{{ vm_project_dir }}/{{ vm_name }}/base.img" \
+          "{{ vm_project_dir }}/{{ vm_name }}/disk.qcow2" {{ default_vm_settings.disk_size }}
+      args:
+        creates: "{{ vm_project_dir }}/{{ vm_name }}/disk.qcow2"
+
+    - name: Get local SSH key
+      slurp:
+        src: "{{ ansible_env.HOME }}/.ssh/id_rsa.pub"
+      register: ssh_key
+
+    - name: Create cloud-init user-data
+      copy:
+        dest: "{{ vm_project_dir }}/{{ vm_name }}/user-data"
+        mode: '0644'
+        content: |
+          #cloud-config
+          hostname: {{ vm_name }}
+          users:
+            - name: ubuntu
+              sudo: ['ALL=(ALL) NOPASSWD:ALL']
+              groups: sudo
+              shell: /bin/bash
+              ssh_authorized_keys:
+                - {{ (ssh_key.content | b64decode).strip() }}
+          chpasswd:
+            list: |
+              ubuntu:ubuntu
+            expire: false
+          ssh_pwauth: true
+          package_update: false
+          package_upgrade: false
+          write_files:
+            - path: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+              permissions: '0644'
+              content: |
+                network:
+                  config: disabled
+            - path: /etc/netplan/01-netcfg.yaml
+              permissions: '0644'
+              content: |
+                network:
+                  version: 2
+                  ethernets:
+                    enp0s2:
+                      dhcp4: false
+                      dhcp6: false
+                      addresses: ["{{ vm_ip }}/24"]
+                      routes:
+                        - to: "0.0.0.0/0"
+                          via: "{{ vm_gateway }}"
+                      nameservers:
+                        addresses: {{ vm_nameservers | to_json }}
+          runcmd:
+            - netplan generate
+            - netplan apply
+            - systemctl enable ssh
+            - systemctl start ssh
+
+    - name: Create cloud-init meta-data
+      copy:
+        dest: "{{ vm_project_dir }}/{{ vm_name }}/meta-data"
+        mode: '0644'
+        content: |
+          instance-id: {{ vm_name }}
+          local-hostname: {{ vm_name }}
+
+    - name: Create cloud-init network-config
+      copy:
+        dest: "{{ vm_project_dir }}/{{ vm_name }}/network-config"
+        mode: '0644'
+        content: |
+          version: 2
+          ethernets:
+            enp0s2:
+              dhcp4: false
+              dhcp6: false
+              addresses: ["{{ vm_ip }}/24"]
+              routes:
+                - to: "0.0.0.0/0"
+                  via: "{{ vm_gateway }}"
+              nameservers:
+                addresses: {{ vm_nameservers | to_json }}
+
+    - name: Remove existing cloud-init ISO
+      file:
+        path: "{{ vm_project_dir }}/{{ vm_name }}/cloud-init.iso"
+        state: absent
+
+    - name: Create cloud-init ISO
+      command: |
+        {{ homebrew_prefix }}/bin/mkisofs -output "{{ vm_project_dir }}/{{ vm_name }}/cloud-init.iso" \
+          -volid cidata -joliet -rock -input-charset utf-8 \
+          "{{ vm_project_dir }}/{{ vm_name }}/user-data" \
+          "{{ vm_project_dir }}/{{ vm_name }}/meta-data" \
+          "{{ vm_project_dir }}/{{ vm_name }}/network-config"
+
+    - name: Check if VM is already running
+      shell: "pgrep -f 'qemu.*{{ vm_name }}' || true"
+      register: vm_check
+      changed_when: false
+
+    - name: Kill existing VM if running
+      command: "pkill -f 'qemu.*{{ vm_name }}'"
+      when: vm_check.stdout != ""
+      ignore_errors: true
+      become: true
+
+    - name: Start VM
+      command: |
+        {{ homebrew_prefix }}/bin/qemu-system-x86_64 \
+          -name {{ vm_name }} \
+          -m {{ default_vm_settings.memory }} \
+          -smp {{ default_vm_settings.cpus }} \
+          -cpu qemu64 \
+          -machine type=q35,accel=tcg \
+          -drive file="{{ vm_project_dir }}/{{ vm_name }}/disk.qcow2",format=qcow2,if=virtio \
+          -drive file="{{ vm_project_dir }}/{{ vm_name }}/cloud-init.iso",format=raw,if=ide,media=cdrom \
+          -device virtio-net-pci,netdev=net0 \
+          -netdev vmnet-bridged,id=net0,ifname={{ network_interface }} \
+          -display none \
+          -serial file:{{ vm_project_dir }}/{{ vm_name }}/console.log \
+          -daemonize
+      become: true
+      register: qemu_output
+
+    - name: Debug QEMU output
+      debug:
+        var: qemu_output
+
+    - name: Add VM to inventory as provisioning
+      add_host:
+        name: "{{ vm_name }}"
+        ansible_host: "{{ vm_ip }}"
+        ansible_user: ubuntu
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+        groups: "qemu_vms"
+        vm_status: "provisioning"
+
+    - name: Update inventory file with provisioning status
+      include_tasks: ../shared/tasks/update_inventory.yml
+      vars:
+        vm_ip: "{{ ip_check.stdout }}"
+        vm_status: "provisioning"
+        vm_group: "qemu_vms"
+
+    - name: Wait for VM to be available
+      wait_for:
+        host: "{{ vm_ip }}"
+        port: 22
+        delay: 30
+        timeout: 300
+        sleep: 5
+
+    - name: Update VM status in inventory to ready
+      add_host:
+        name: "{{ vm_name }}"
+        ansible_host: "{{ vm_ip }}"
+        ansible_user: ubuntu
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+        groups: "qemu_vms"
+        vm_status: "ready"
+
+    - name: Update inventory file with ready status
+      include_tasks: ../shared/tasks/update_inventory.yml
+      vars:
+        vm_ip: "{{ ip_check.stdout }}"
+        vm_status: "ready"
+        vm_group: "qemu_vms"
+
+- name: Verify VM connection
+  hosts: "{{ name }}"
+  gather_facts: false
+  vars:
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+  tasks:
+    - name: Wait for SSH to be fully ready
+      wait_for_connection:
+        delay: 10
+        timeout: 300
+        sleep: 5
+
+    - name: Wait for cloud-init to complete
+      raw: cloud-init status --wait
+      register: cloud_init_result
+      until: cloud_init_result.rc == 0
+      retries: 60
+      delay: 5
+
+    - name: Get VM information
+      command: hostname
+      register: hostname_result
+      retries: 3
+      delay: 5
+      until: hostname_result.rc == 0
+
+    - name: Display VM information
+      debug:
+        msg: |
+          VM Creation Completed:
+          Hostname: {{ hostname_result.stdout }}
+          IP Address: {{ ansible_host }}
+          Username: {{ ansible_user }} 

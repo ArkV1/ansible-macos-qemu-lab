@@ -1,0 +1,41 @@
+---
+- name: Provision Multiple QEMU VMs
+  hosts: macos_hosts
+  gather_facts: true
+  vars_files:
+    - ../../group_vars/all/vms.yml
+    - ../../group_vars/macos_hosts/vars.yml
+  vars:
+    homebrew_prefix: "/opt/homebrew"
+    network_interface: "en0"  # Default macOS WiFi interface
+    vm_ip_range_start: 10  # Start checking from 192.168.1.10
+    vm_ip_range_end: 250   # End at 192.168.1.250
+    vm_gateway: "192.168.1.1"
+    vm_netmask: "255.255.255.0"
+    vm_nameservers:
+      - "8.8.8.8"
+      - "8.8.4.4"
+  environment:
+    OBJC_DISABLE_INITIALIZE_FORK_SAFETY: "YES"
+
+  pre_tasks:
+    - name: Read current inventory
+      slurp:
+        src: /ansible/inventory/hosts
+      register: current_inventory
+      delegate_to: localhost
+      
+    - name: Debug current inventory
+      debug:
+        msg: "Current inventory contains {{ current_inventory.content | b64decode | regex_findall('192\\.168\\.1\\.\\d+') | length }} IPs in our network"
+
+  tasks:
+    - name: Provision VMs
+      include_tasks: provision_qemu_vm.yml
+      loop: "{{ vms }}"
+      loop_control:
+        loop_var: current_vm
+        label: "{{ current_vm.name }}"
+      vars:
+        vm_name: "{{ current_vm.name }}"
+        vm_group: "qemu_vms" 

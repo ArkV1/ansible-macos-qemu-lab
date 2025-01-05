@@ -1,0 +1,30 @@
+---
+- name: Clean up all VMs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    cleanup_test: "{{ cleanup_test | default(true) }}"
+    cleanup_qemu: "{{ cleanup_qemu | default(true) }}"
+  
+  tasks:
+    - name: Clean up test VMs
+      include_tasks: ../test_vm/cleanup_test_vms.yml
+      when: cleanup_test | bool
+
+    - name: Clean up QEMU VMs
+      include_tasks: ../qemu_vm/cleanup_qemu_vms.yml
+      when: cleanup_qemu | bool
+
+    - name: Display final cleanup message
+      debug:
+        msg: |
+          VM Cleanup Summary:
+          {% if cleanup_test and cleanup_qemu %}
+          Cleaned up both test VMs and QEMU VMs
+          {% elif cleanup_test %}
+          Cleaned up test VMs only
+          {% elif cleanup_qemu %}
+          Cleaned up QEMU VMs only
+          {% else %}
+          No cleanup was performed
+          {% endif %} 

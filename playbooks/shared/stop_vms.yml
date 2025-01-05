@@ -1,0 +1,35 @@
+---
+- name: Stop VMs
+  hosts: macos_hosts
+  gather_facts: false
+
+  tasks:
+    - name: Set target VMs
+      set_fact:
+        target_vms: "{{ groups['test_vms'] | default([]) if target_group == 'test_vms' else 
+                       groups['production_vms'] | default([]) if target_group == 'production_vms' else 
+                       (groups['test_vms'] | default([]) + groups['production_vms'] | default([])) }}"
+
+    - name: Check if VMs are running
+      shell: "pgrep -f 'qemu-system.*{{ item }}' || true"
+      register: vm_check
+      changed_when: false
+      loop: "{{ target_vms }}"
+
+    - name: Stop running VMs
+      shell: "pkill -f 'qemu-system.*{{ item }}'"
+      loop: "{{ target_vms }}"
+      when: "vm_check.results[target_vms.index(item)].stdout != ''"
+      ignore_errors: true
+
+    - name: Display stopped VMs
+      debug:
+        msg: |
+          Stopped VMs:
+          {% for host in target_vms %}
+          {% if vm_check.results[target_vms.index(host)].stdout != '' %}
+          - {{ host }}
+          {% else %}
+          - {{ host }} (Was not running)
+          {% endif %}
+          {% endfor %} 

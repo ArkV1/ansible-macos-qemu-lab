@@ -1,0 +1,60 @@
+---
+- name: Start Existing VMs
+  hosts: macos_hosts
+  gather_facts: true
+  vars_files:
+    - ../../group_vars/macos_hosts/vars.yml
+  vars:
+    homebrew_prefix: "/opt/homebrew"
+
+  tasks:
+    - name: Set target VMs
+      set_fact:
+        target_vms: "{{ groups['test_vms'] | default([]) if target_group == 'test_vms' else 
+                       groups['production_vms'] | default([]) if target_group == 'production_vms' else 
+                       (groups['test_vms'] | default([]) + groups['production_vms'] | default([])) }}"
+
+    - name: Check if VMs are running
+      shell: "pgrep -f 'qemu-system.*{{ item }}' || true"
+      register: vm_check
+      changed_when: false
+      loop: "{{ target_vms }}"
+
+    - name: Start VMs
+      command: |
+        {{ homebrew_prefix }}/bin/qemu-system-x86_64 \
+          -name {{ item }} \
+          -m 2048 \
+          -smp 2 \
+          -cpu qemu64 \
+          -machine type=q35,accel=tcg \
+          -drive file="{{ vm_project_dir }}/{{ 'test' if item in groups['test_vms'] else 'ready' }}/{{ item }}/disk.qcow2",format=qcow2,if=virtio \
+          -drive file="{{ vm_project_dir }}/{{ 'test' if item in groups['test_vms'] else 'ready' }}/{{ item }}/cloud-init.iso",format=raw,if=ide,media=cdrom \
+          -netdev user,id=net0,hostfwd=tcp::{{ hostvars[item]['ansible_port'] }}-:22 \
+          -device virtio-net-pci,netdev=net0 \
+          -display none \
+          -serial file:{{ vm_project_dir }}/{{ 'test' if item in groups['test_vms'] else 'ready' }}/{{ item }}/console.log \
+          -daemonize
+      loop: "{{ target_vms }}"
+      when: "vm_check.results[target_vms.index(item)].stdout == ''"
+
+    - name: Wait for VMs to be available
+      wait_for:
+        host: localhost
+        port: "{{ hostvars[item]['ansible_port'] }}"
+        delay: 10
+        timeout: 300
+      loop: "{{ target_vms }}"
+      when: "vm_check.results[target_vms.index(item)].stdout == ''"
+
+    - name: Display started VMs
+      debug:
+        msg: |
+          Started VMs:
+          {% for host in target_vms %}
+          {% if vm_check.results[target_vms.index(host)].stdout == '' %}
+          - {{ host }} (Port: {{ hostvars[host]['ansible_port'] }})
+          {% else %}
+          - {{ host }} (Already running)
+          {% endif %}
+          {% endfor %} 

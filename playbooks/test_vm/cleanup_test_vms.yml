@@ -1,0 +1,54 @@
+---
+- name: Clean up test VMs
+  hosts: macos_hosts
+  gather_facts: true
+  vars_files:
+    - ../../group_vars/macos_hosts/vars.yml
+  
+  tasks:
+    - name: Get list of test VMs from inventory
+      shell: "grep -A 100 '\\[test_vms\\]' /ansible/inventory/hosts | grep -B 100 '\\[' | grep -v '\\[' | awk '{print $1}'"
+      register: test_vms_list
+      changed_when: false
+      delegate_to: localhost
+
+    - name: Check if test VMs are running
+      shell: "pgrep -f 'qemu-system.*{{ item }}' || true"
+      register: vm_check
+      changed_when: false
+      loop: "{{ test_vms_list.stdout_lines }}"
+      when: test_vms_list.stdout_lines | length > 0
+
+    - name: Stop running test VMs
+      shell: "pkill -f 'qemu-system.*{{ item }}'"
+      loop: "{{ test_vms_list.stdout_lines }}"
+      when: 
+        - test_vms_list.stdout_lines | length > 0
+        - vm_check.results[test_vms_list.stdout_lines.index(item)].stdout != ''
+      ignore_errors: true
+      become: true
+
+    - name: Remove test VM directories
+      file:
+        path: "{{ vm_project_dir }}/test/{{ item }}"
+        state: absent
+      loop: "{{ test_vms_list.stdout_lines }}"
+      when: test_vms_list.stdout_lines | length > 0
+
+    - name: Remove test VMs section from inventory
+      shell: |
+        sed -i '/\[test_vms\]/,/\[/{ /\[test_vms\]/!{ /\[/!d; }; }' /ansible/inventory/hosts
+        sed -i '/\[test_vms\]/{N;/\n\[/d}' /ansible/inventory/hosts
+      delegate_to: localhost
+      
+    - name: Display cleanup results
+      debug:
+        msg: |
+          Cleaned up test VMs:
+          {% if test_vms_list.stdout_lines | length > 0 %}
+          {% for vm in test_vms_list.stdout_lines %}
+          - {{ vm }}
+          {% endfor %}
+          {% else %}
+          No test VMs found to clean up
+          {% endif %} 

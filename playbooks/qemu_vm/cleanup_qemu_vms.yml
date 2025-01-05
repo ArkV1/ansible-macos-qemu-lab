@@ -1,0 +1,54 @@
+---
+- name: Clean up QEMU VMs
+  hosts: macos_hosts
+  gather_facts: true
+  vars_files:
+    - ../../group_vars/macos_hosts/vars.yml
+  
+  tasks:
+    - name: Get list of QEMU VMs from inventory
+      shell: "grep -A 100 '\\[qemu_vms\\]' /ansible/inventory/hosts | grep -B 100 '\\[' | grep -v '\\[' | awk '{print $1}'"
+      register: qemu_vms_list
+      changed_when: false
+      delegate_to: localhost
+
+    - name: Check if QEMU VMs are running
+      shell: "pgrep -f 'qemu-system.*{{ item }}' || true"
+      register: vm_check
+      changed_when: false
+      loop: "{{ qemu_vms_list.stdout_lines }}"
+      when: qemu_vms_list.stdout_lines | length > 0
+
+    - name: Stop running QEMU VMs
+      shell: "pkill -f 'qemu-system.*{{ item }}'"
+      loop: "{{ qemu_vms_list.stdout_lines }}"
+      when: 
+        - qemu_vms_list.stdout_lines | length > 0
+        - vm_check.results[qemu_vms_list.stdout_lines.index(item)].stdout != ''
+      ignore_errors: true
+      become: true
+
+    - name: Remove QEMU VM directories
+      file:
+        path: "{{ vm_project_dir }}/ready/{{ item }}"
+        state: absent
+      loop: "{{ qemu_vms_list.stdout_lines }}"
+      when: qemu_vms_list.stdout_lines | length > 0
+
+    - name: Remove QEMU VMs section from inventory
+      shell: |
+        sed -i '/\[qemu_vms\]/,/\[/{ /\[qemu_vms\]/!{ /\[/!d; }; }' /ansible/inventory/hosts
+        sed -i '/\[qemu_vms\]/{N;/\n\[/d}' /ansible/inventory/hosts
+      delegate_to: localhost
+      
+    - name: Display cleanup results
+      debug:
+        msg: |
+          Cleaned up QEMU VMs:
+          {% if qemu_vms_list.stdout_lines | length > 0 %}
+          {% for vm in qemu_vms_list.stdout_lines %}
+          - {{ vm }}
+          {% endfor %}
+          {% else %}
+          No QEMU VMs found to clean up
+          {% endif %} 

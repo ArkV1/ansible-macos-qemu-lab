@@ -124,8 +124,55 @@ You can customize the VM settings by editing the variables in `playbooks/provisi
 Run the test playbook to verify VM creation functionality:
 
 ```bash
-docker compose run --rm ansible ansible-playbook playbooks/test_vm_creation.yml
+docker exec -it ansible-controller ansible-playbook playbooks/test_vm_creation.yml
 ```
+
+### Managing VMs
+
+The setup includes playbooks for managing VMs in different groups (`test_vms` and `production_vms`). You can start and stop VMs selectively by group or manage all VMs at once.
+
+#### Starting VMs
+
+```bash
+# Start all VMs
+docker exec ansible-controller ansible-playbook playbooks/start_existing_vms.yml
+
+# Start only test VMs
+docker exec ansible-controller ansible-playbook playbooks/start_existing_vms.yml -e "target_group=test_vms"
+
+# Start only production VMs
+docker exec ansible-controller ansible-playbook playbooks/start_existing_vms.yml -e "target_group=production_vms"
+```
+
+#### Stopping VMs
+
+```bash
+# Stop all VMs
+docker exec ansible-controller ansible-playbook playbooks/stop_vms.yml
+
+# Stop only test VMs
+docker exec ansible-controller ansible-playbook playbooks/stop_vms.yml -e "target_group=test_vms"
+
+# Stop only production VMs
+docker exec ansible-controller ansible-playbook playbooks/stop_vms.yml -e "target_group=production_vms"
+```
+
+The VMs are organized into two groups:
+- `test_vms`: For test/development VMs (stored in `~/vms/project_dockerized_ansible/test/`)
+- `production_vms`: For production VMs (stored in `~/vms/project_dockerized_ansible/ready/`)
+
+When starting VMs, the system:
+1. Checks if the VM is already running
+2. Starts any stopped VMs with their saved configuration
+3. Waits for SSH to be available
+4. Displays the status of each VM
+
+When stopping VMs, the system:
+1. Checks which VMs are running
+2. Gracefully stops the selected VMs
+3. Displays which VMs were stopped
+
+Note: VMs maintain their state between stops and starts since they use persistent disk images.
 
 ## Security Notes
 

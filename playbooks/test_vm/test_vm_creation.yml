@@ -1,0 +1,341 @@
+---
+- name: Test VM Creation on MacOS Host
+  hosts: macos_hosts
+  gather_facts: true
+  vars_files:
+    - ../../group_vars/macos_hosts/vars.yml
+  vars:
+    vm_name: "test-ubuntu"
+    vm_memory: "2048"
+    vm_cpus: "2"
+    vm_disk_size: "10G"
+    vm_image_url: "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
+    vm_base_dir: "{{ vm_project_dir }}/test"
+    homebrew_prefix: "/opt/homebrew"
+    network_interface: "en0"  # Default macOS WiFi interface
+    vm_ip_range_start: 50  # Start checking from 192.168.1.50
+    vm_ip_range_end: 100   # End at 192.168.1.100
+    vm_gateway: "192.168.1.1"
+    vm_netmask: "255.255.255.0"
+    vm_nameservers:
+      - "8.8.8.8"
+      - "8.8.4.4"
+  environment:
+    OBJC_DISABLE_INITIALIZE_FORK_SAFETY: "YES"
+
+  pre_tasks:
+    - name: Debug variables
+      debug:
+        msg: |
+          ansible_env.HOME: {{ ansible_env.HOME }}
+          vm_project_dir: {{ vm_project_dir | default('undefined') }}
+          vm_base_dir: {{ vm_base_dir | default('undefined') }}
+
+    - name: Find available IP address
+      shell: |
+        for ip in $(seq {{ vm_ip_range_start }} {{ vm_ip_range_end }}); do
+          if ! ping -c 1 -W 1 192.168.1.$ip > /dev/null 2>&1; then
+            echo "192.168.1.$ip"
+            exit 0
+          fi
+        done
+        echo "No IP available in range"
+        exit 1
+      register: ip_check
+      changed_when: false
+      failed_when: ip_check.stdout == "No IP available in range"
+
+    - name: Set VM IP fact
+      set_fact:
+        vm_static_ip: "{{ ip_check.stdout }}"
+
+    - name: Display selected IP
+      debug:
+        msg: "Selected IP address for VM: {{ vm_static_ip }}"
+
+    - name: Ensure VM base directory exists
+      file:
+        path: "{{ vm_base_dir }}"
+        state: directory
+        mode: '0755'
+
+  tasks:
+    - name: Ensure VM directory exists
+      file:
+        path: "{{ vm_base_dir }}/{{ vm_name }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download Ubuntu cloud image
+      get_url:
+        url: "{{ vm_image_url }}"
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/base.img"
+        mode: '0644'
+
+    - name: Create VM disk
+      command: |
+        {{ homebrew_prefix }}/bin/qemu-img create -f qcow2 -F qcow2 \
+          -b "{{ vm_base_dir }}/{{ vm_name }}/base.img" \
+          "{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2" {{ vm_disk_size }}
+      args:
+        creates: "{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2"
+
+    - name: Get local SSH key
+      slurp:
+        src: "{{ ansible_env.HOME }}/.ssh/id_rsa.pub"
+      register: ssh_key
+
+    - name: Create cloud-init user-data
+      copy:
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/user-data"
+        mode: '0644'
+        content: |
+          #cloud-config
+          users:
+            - name: ubuntu
+              sudo: ['ALL=(ALL) NOPASSWD:ALL']
+              groups: sudo
+              shell: /bin/bash
+              ssh_authorized_keys:
+                - {{ (ssh_key.content | b64decode).strip() }}
+          chpasswd:
+            list: |
+              ubuntu:ubuntu
+            expire: false
+          ssh_pwauth: true
+          package_update: false
+          package_upgrade: false
+          write_files:
+            - path: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+              permissions: '0644'
+              content: |
+                network:
+                  config: disabled
+            - path: /etc/netplan/01-netcfg.yaml
+              permissions: '0644'
+              content: |
+                network:
+                  version: 2
+                  ethernets:
+                    enp0s2:
+                      dhcp4: false
+                      dhcp6: false
+                      addresses: ["{{ vm_static_ip }}/24"]
+                      routes:
+                        - to: "0.0.0.0/0"
+                          via: "{{ vm_gateway }}"
+                      nameservers:
+                        addresses: {{ vm_nameservers | to_json }}
+          runcmd:
+            - netplan generate
+            - netplan apply
+            - systemctl enable ssh
+            - systemctl start ssh
+
+    - name: Create cloud-init meta-data
+      copy:
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/meta-data"
+        mode: '0644'
+        content: |
+          instance-id: {{ vm_name }}
+          local-hostname: {{ vm_name }}
+
+    - name: Create cloud-init network-config
+      copy:
+        dest: "{{ vm_base_dir }}/{{ vm_name }}/network-config"
+        mode: '0644'
+        content: |
+          version: 2
+          ethernets:
+            enp0s2:
+              dhcp4: false
+              dhcp6: false
+              addresses: ["{{ vm_static_ip }}/24"]
+              routes:
+                - to: "0.0.0.0/0"
+                  via: "{{ vm_gateway }}"
+              nameservers:
+                addresses: {{ vm_nameservers | to_json }}
+
+    - name: Remove existing cloud-init ISO
+      file:
+        path: "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso"
+        state: absent
+
+    - name: Create cloud-init ISO
+      command: |
+        {{ homebrew_prefix }}/bin/mkisofs -output "{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso" \
+          -volid cidata -joliet -rock -input-charset utf-8 \
+          "{{ vm_base_dir }}/{{ vm_name }}/user-data" \
+          "{{ vm_base_dir }}/{{ vm_name }}/meta-data" \
+          "{{ vm_base_dir }}/{{ vm_name }}/network-config"
+
+    - name: Check if VM is already running
+      shell: "pgrep -f 'qemu.*{{ vm_name }}' || true"
+      register: vm_check
+      changed_when: false
+
+    - name: Kill existing VM if running
+      command: "pkill -f 'qemu.*{{ vm_name }}'"
+      when: vm_check.stdout != ""
+      ignore_errors: true
+      become: true
+
+    - name: Start VM
+      command: |
+        {{ homebrew_prefix }}/bin/qemu-system-x86_64 \
+          -name {{ vm_name }} \
+          -m {{ vm_memory }} \
+          -smp {{ vm_cpus }} \
+          -cpu qemu64 \
+          -machine type=q35,accel=tcg \
+          -drive file="{{ vm_base_dir }}/{{ vm_name }}/disk.qcow2",format=qcow2,if=virtio \
+          -drive file="{{ vm_base_dir }}/{{ vm_name }}/cloud-init.iso",format=raw,if=ide,media=cdrom \
+          -device virtio-net-pci,netdev=net0 \
+          -netdev vmnet-bridged,id=net0,ifname=en0 \
+          -display none \
+          -serial file:{{ vm_base_dir }}/{{ vm_name }}/console.log \
+          -daemonize
+      become: true
+      register: qemu_output
+      
+    - name: Debug QEMU output
+      debug:
+        var: qemu_output
+
+    - name: Wait for SSH to be available
+      wait_for:
+        host: "{{ vm_static_ip }}"
+        port: 22
+        delay: 30
+        timeout: 300
+        sleep: 5
+      register: ssh_check
+
+    - name: Add VM to inventory
+      add_host:
+        name: "{{ vm_name }}"
+        ansible_host: "{{ vm_static_ip }}"
+        ansible_user: ubuntu
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+        groups: test_vms
+
+    - name: Set VM facts for inventory update
+      set_fact:
+        vm_info: "{{ vm_name }} ansible_host={{ vm_static_ip }} ansible_user=ubuntu ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
+        vm_name_fact: "{{ vm_name }}"
+
+- name: Configure VM Network
+  hosts: test_vms
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Wait for VM to be reachable
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        delay: 30
+        timeout: 300
+        sleep: 5
+
+    - name: Get network interface status
+      shell: |
+        ip link show enp0s2
+        ip addr show enp0s2
+        ip route show
+      register: network_status
+
+    - name: Display network status
+      debug:
+        var: network_status.stdout_lines
+
+    - name: Check DNS resolution
+      shell: |
+        cat /etc/resolv.conf
+        ping -c 1 8.8.8.8 || true
+        ping -c 1 google.com || true
+      register: dns_check
+      ignore_errors: yes
+
+    - name: Display DNS check results
+      debug:
+        var: dns_check.stdout_lines
+
+    - name: Verify network configuration files
+      shell: |
+        echo "=== Netplan Config ==="
+        cat /etc/netplan/01-netcfg.yaml
+        echo "=== Cloud-Init Network Config ==="
+        cat /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+        echo "=== Network Interfaces ==="
+        ls -l /etc/network/interfaces.d/ || true
+      register: network_configs
+
+    - name: Display network configurations
+      debug:
+        var: network_configs.stdout_lines
+
+    - name: Test connectivity to host network
+      shell: |
+        echo "=== Gateway Ping Test ==="
+        ping -c 1 {{ vm_gateway }} || true
+        echo "=== Route to Gateway ==="
+        ip route get {{ vm_gateway }}
+      register: connectivity_test
+      ignore_errors: yes
+
+    - name: Display connectivity test results
+      debug:
+        var: connectivity_test.stdout_lines
+
+- name: Update Control Node Inventory
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Ensure test_vms group exists in inventory file
+      lineinfile:
+        path: "/ansible/inventory/hosts"
+        line: "[test_vms]"
+        create: yes
+        mode: '0644'
+            
+    - name: Add or Update VM in inventory file
+      lineinfile:
+        path: "/ansible/inventory/hosts"
+        regexp: "^{{ hostvars['host.docker.internal']['vm_name_fact'] }}.*$"
+        line: "{{ hostvars['host.docker.internal']['vm_info'] }}"
+        insertafter: "^\\[test_vms\\]"
+        state: present
+        mode: '0644'
+
+- name: Test VM Connection
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Wait for VM to be fully ready
+      wait_for:
+        host: "{{ hostvars['host.docker.internal']['vm_static_ip'] }}"
+        port: 22
+        delay: 60
+        timeout: 300
+        sleep: 5
+
+    - name: Check cloud-init status
+      shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@{{ hostvars['host.docker.internal']['vm_static_ip'] }} 'cloud-init status --wait'"
+      register: cloud_init_result
+      until: cloud_init_result.rc == 0
+      retries: 30
+      delay: 10
+
+    - name: Get VM information
+      shell: "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@{{ hostvars['host.docker.internal']['vm_static_ip'] }} 'hostname'"
+      register: hostname_result
+
+    - name: Display VM information
+      debug:
+        msg: |
+          VM Creation Test Completed:
+          Hostname: {{ hostname_result.stdout }}
+          IP Address: {{ hostvars['host.docker.internal']['vm_static_ip'] }}
+          Username: ubuntu
+          Location: {{ hostvars['host.docker.internal']['ansible_env']['HOME'] }}/vms/project_dockerized_ansible/test/test-ubuntu 

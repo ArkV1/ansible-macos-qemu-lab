@@ -1,0 +1,48 @@
+---
+- name: Verify required variables
+  assert:
+    that: "{{ item }} is defined"
+    fail_msg: "Required variable '{{ item }}' is not defined"
+  loop:
+    - vm_name
+    - vm_ip
+    - vm_status
+    - vm_group
+
+- name: Set inventory variables
+  set_fact:
+    inventory_path: "/ansible/inventory/hosts"
+    inventory_group: "{{ vm_group }}"
+    vm_entry: "{{ vm_name }} ansible_host={{ vm_ip }} ansible_user=ubuntu ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null' vm_status={{ vm_status }}"
+
+- name: Ensure inventory group exists
+  lineinfile:
+    path: "{{ inventory_path }}"
+    line: "[{{ inventory_group }}]"
+    create: yes
+    state: present
+  delegate_to: localhost
+  vars:
+    ansible_python_interpreter: /usr/local/bin/python3
+        
+- name: Add or Update VM in inventory file
+  lineinfile:
+    path: "{{ inventory_path }}"
+    regexp: "^{{ vm_name }}.*$"
+    line: "{{ vm_entry }}"
+    insertafter: "^\\[{{ inventory_group }}\\]"
+    state: present
+  delegate_to: localhost
+  vars:
+    ansible_python_interpreter: /usr/local/bin/python3
+
+- name: Display Updated Inventory Information
+  debug:
+    msg: |
+      Updated inventory for VM:
+      - Name: {{ vm_name }}
+      - IP Address: {{ vm_ip }}
+      - Status: {{ vm_status }}
+      - Group: {{ inventory_group }}
+      - Full Entry: {{ vm_entry }}
+      - Inventory File: {{ inventory_path }} 

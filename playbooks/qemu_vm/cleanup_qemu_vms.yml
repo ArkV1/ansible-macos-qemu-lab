@@ -4,6 +4,8 @@
   gather_facts: true
   vars_files:
     - ../../group_vars/macos_hosts/vars.yml
+  vars:
+    ansible_python_interpreter: /usr/local/bin/python
   
   tasks:
     - name: Get list of QEMU VMs from inventory
@@ -11,6 +13,8 @@
       register: qemu_vms_list
       changed_when: false
       delegate_to: localhost
+      vars:
+        ansible_python_interpreter: /usr/local/bin/python
 
     - name: Check if QEMU VMs are running
       shell: "pgrep -f 'qemu-system.*{{ item }}' || true"
@@ -30,7 +34,7 @@
 
     - name: Remove QEMU VM directories
       file:
-        path: "{{ vm_project_dir }}/ready/{{ item }}"
+        path: "{{ vm_project_dir }}/{{ item }}"
         state: absent
       loop: "{{ qemu_vms_list.stdout_lines }}"
       when: qemu_vms_list.stdout_lines | length > 0
@@ -40,15 +44,9 @@
         sed -i '/\[qemu_vms\]/,/\[/{ /\[qemu_vms\]/!{ /\[/!d; }; }' /ansible/inventory/hosts
         sed -i '/\[qemu_vms\]/{N;/\n\[/d}' /ansible/inventory/hosts
       delegate_to: localhost
+      vars:
+        ansible_python_interpreter: /usr/local/bin/python
       
     - name: Display cleanup results
       debug:
-        msg: |
-          Cleaned up QEMU VMs:
-          {% if qemu_vms_list.stdout_lines | length > 0 %}
-          {% for vm in qemu_vms_list.stdout_lines %}
-          - {{ vm }}
-          {% endfor %}
-          {% else %}
-          No QEMU VMs found to clean up
-          {% endif %} 
+        var: qemu_vms_list.stdout_lines 

@@ -168,12 +168,12 @@
           "{{ vm_project_dir }}/{{ vm_name }}/network-config"
 
     - name: Check if VM is already running
-      shell: "pgrep -f 'qemu.*{{ vm_name }}' || true"
+      shell: "pgrep -f 'qemu-system.*{{ vm_name }}$' || true"
       register: vm_check
       changed_when: false
 
     - name: Kill existing VM if running
-      command: "pkill -f 'qemu.*{{ vm_name }}'"
+      shell: "pkill -f 'qemu-system.*{{ vm_name }}$'"
       when: vm_check.stdout != ""
       ignore_errors: true
       become: true

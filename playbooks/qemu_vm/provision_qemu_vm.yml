@@ -178,6 +178,10 @@
       ignore_errors: true
       become: true
 
+    - name: Generate random MAC address
+      set_fact:
+        vm_mac: "52:54:00:{{ 256 | random(seed=vm_name) | hex }}:{{ 256 | random(seed=vm_name + '1') | hex }}:{{ 256 | random(seed=vm_name + '2') | hex }}"
+
     - name: Start VM
       command: |
         {{ homebrew_prefix }}/bin/qemu-system-x86_64 \
@@ -188,10 +192,10 @@
           -machine type=q35,accel=tcg \
           -drive file="{{ vm_project_dir }}/{{ vm_name }}/disk.qcow2",format=qcow2,if=virtio \
           -drive file="{{ vm_project_dir }}/{{ vm_name }}/cloud-init.iso",format=raw,if=ide,media=cdrom \
-          -device virtio-net-pci,netdev=net0 \
+          -device virtio-net-pci,netdev=net0,mac={{ vm_mac }} \
           -netdev vmnet-bridged,id=net0,ifname={{ network_interface }} \
           -display none \
-          -serial file:{{ vm_project_dir }}/{{ vm_name }}/console.log \
+          -serial unix:{{ vm_project_dir }}/{{ vm_name }}/console.sock,server,nowait \
           -daemonize
       become: true
       register: qemu_output
